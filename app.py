@@ -1,52 +1,65 @@
-"""Pulse CRM demo — FastAPI + SQLite + Jinja2 (N4).
-
-Palaišana:  uvicorn app:app --reload
-Atvērt:     http://127.0.0.1:8000
-"""
-
+"""Iesniegumi — minimāls skelets. Visu pārējo būvē komanda kopā ar Claude (skat. BACKLOG.md)."""
 import os
+import sqlite3
+from flask import Flask, g, render_template, session, redirect, url_for, request
 
-from fastapi import FastAPI, Request
-from fastapi.responses import RedirectResponse
-from fastapi.staticfiles import StaticFiles
+DB_PATH = os.path.join(os.path.dirname(__file__), "data.db")
+SCHEMA_PATH = os.path.join(os.path.dirname(__file__), "schema.sql")
 
-from crm import (admin, auth, info, meklesana, mijiedarbibas, organizacijas, panelis, parskats,
-                 pieprasijumi, uzdevumi)
-from crm.db import BASE_DIR, init_db
-from crm.web import Forbidden, LoginRequired, NotFound, current_user, render
+app = Flask(__name__)
+app.secret_key = os.environ.get("SECRET_KEY", "macibu-uzdevums-nav-drosa-atslega")
 
-
-def kluda(request: Request, status_code: int, title: str, message: str):
-    user = current_user(request)
-    return render(request, user, "kluda.html", title, status_code=status_code,
-                  layout="base.html" if user else "public.html", message=message)
+LOMAS = {"iedzivotajs": "Iedzīvotājs", "darbinieks": "Darbinieks", "vaditajs": "Vadītājs"}
 
 
-def create_app() -> FastAPI:
+def get_db():
+    if "db" not in g:
+        g.db = sqlite3.connect(DB_PATH)
+        g.db.row_factory = sqlite3.Row
+    return g.db
+
+
+@app.teardown_appcontext
+def close_db(_exc):
+    db = g.pop("db", None)
+    if db is not None:
+        db.close()
+
+
+def init_db():
+    """Izveido tabulas un sākumdatus, ja datubāzes vēl nav."""
+    if os.path.exists(DB_PATH):
+        return
+    with sqlite3.connect(DB_PATH) as db, open(SCHEMA_PATH, encoding="utf-8") as f:
+        db.executescript(f.read())
+
+
+@app.context_processor
+def inject_globals():
+    loma = session.get("loma")
+    return {"loma": loma, "lomas_nosaukums": LOMAS.get(loma), "LOMAS": LOMAS}
+
+
+@app.route("/")
+def index():
+    temas = get_db().execute("SELECT id, nosaukums FROM temas ORDER BY nosaukums").fetchall()
+    return render_template("index.html", temas=temas)
+
+
+@app.post("/loma")
+def izveleties_lomu():
+    loma = request.form.get("loma")
+    if loma in LOMAS:
+        session["loma"] = loma
+    return redirect(url_for("index"))
+
+
+@app.route("/pieklustamiba")
+def pieklustamiba():
+    # US-6: aizpildiet pēc testēšanas (veidne docs/PIEEJAMIBAS-PRASIBAS.md, 5. sadaļa)
+    return render_template("pieklustamiba.html")
+
+
+if __name__ == "__main__":
     init_db()
-    app = FastAPI(title="Pulse CRM demo", docs_url=None, redoc_url=None, openapi_url=None)
-    app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
-    for module in (auth, panelis, organizacijas, mijiedarbibas, pieprasijumi, uzdevumi,
-                   meklesana, parskats, admin, info):
-        app.include_router(module.router)
-
-    @app.exception_handler(LoginRequired)
-    def _login(request: Request, exc: LoginRequired):
-        return RedirectResponse("/login", status_code=303)
-
-    @app.exception_handler(Forbidden)
-    def _forbidden(request: Request, exc: Forbidden):
-        return kluda(request, 403, "Piekļuve liegta", exc.message)
-
-    @app.exception_handler(NotFound)
-    def _not_found(request: Request, exc: NotFound):
-        return kluda(request, 404, "Nav atrasts", "Pieprasītais ieraksts neeksistē vai jums nav piekļuves tam.")
-
-    @app.exception_handler(404)
-    def _404(request: Request, exc):
-        return kluda(request, 404, "Nav atrasts", "Šāda lapa neeksistē.")
-
-    return app
-
-
-app = create_app()
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=True)
